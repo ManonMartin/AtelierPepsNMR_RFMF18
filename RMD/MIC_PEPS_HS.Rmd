@@ -1,0 +1,456 @@
+---
+title: "Evaluation de la qualité du prétraitement avec PepsNMR - Human Serum dataset"
+author: "B. Govaerts & M. Martin"
+date: '`r format(Sys.time(), "%B %d, %Y,%H:%M")`'
+output:
+  html_document: # options pour sortie HTML
+    code_folding: hide #  Cache le code  
+    collapsed: yes # Crée un document unique 
+    fig_caption: yes # Figures encapsulées ? 
+    fig_height: 5 # Hauteur par défaut des figures
+    fig_width: 6 # Largeur par défaut des figure
+    highlight: tango # style de mise en valeur du code
+    number_sections: yes # Ajout table des matières 
+    theme: united  # Style du document
+    toc: yes # Table des matiere ?
+    toc_depth: 3  # Profondeur table des matière
+    toc_float: yes # table des matière flottante
+  pdf_document: # options pour sorties pdf
+    toc: yes
+    toc_depth: '3'
+  word_document: default
+editor_options: 
+  chunk_output_type: console
+---
+```{r Intro, eval = FALSE, echo = FALSE}
+# ====================================================================
+# Ce fichier Rmd fournit un code +/- générique pour vérifier la qualité du prétraitement si les données sont classées en groupes en analysant l'homogénéité des groupes.
+# ====================================================================
+```
+
+
+```{r setup, include=FALSE}
+rm(list=ls())
+## Download and load the librairies
+
+# require ("devtools")
+#devtools::install_github("ManonMartin/PepsNMR", build_vignettes = TRUE)
+#devtools::install_github("ManonMartin/MBXUCL", build_vignettes = TRUE)
+require(PepsNMR)
+require(knitr) 
+require(pander) # Librairie pour afficher des tableaux
+require(MBXUCL)
+
+## Options globales pour le rmd
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Etude de la répétabilité spectrale d'un prétraitement 
+
+```{r Repetparams}
+#============ PARAMETRES A MODIFIER quand vous utilisez MBXUCL
+## A. Paramètres globaux liés aux noms et chemin d'accès des dataset
+
+dataname <- "HumanSerum" # nom du jeu de données 
+
+## Mettre ici le nom du chemin d'accès du répertoire où sont les spectres prétraités
+# spectres prétraités
+data.path <- "/Users/manon/Documents/Conférences/RFMF2018/Atelier_PepsNMR/RMD"    
+
+# load le fichier .RData créé précédemment
+load(file.path(data.path,paste0(dataname,".RData")))
+
+dataset <- Re_Spectrum_data
+# ou 
+# dataset <- read.table(file = file.path(data.path,paste0(dataname,"_Spectra.csv")),
+#                       sep=";", dec=" ", row.names = 1, header = TRUE, 
+#                       check.names =FALSE)
+
+dataset <- as.matrix(dataset)
+
+
+## B. Définition des groupes de spectres par sujet. 
+
+# group_HS est loadé avec le fichier .RData créé précédemment
+# ou
+# dataGroup.path <-  system.file("extdata", package = "PepsNMR") # données du package PepsNMR
+# dir(dataGroup.path) # ce que contient le répertoire data.path
+# group_HS <- read.csv(file.path(dataGroup.path, "Group_HS.csv"), header = TRUE, sep = ";")
+
+group <- as.factor(substr(group_HS[,1],4,5)) # donneur comme groupe 
+table(group) # fréquences de chaque groupe
+group_num <- group_HS[,2]  # Version numerique des noms de groupes
+table(group_num) # fréquences de chaque groupe
+
+ls() # éléments dans l'environnement global
+
+
+## C. Setup des paramètres de représentation graphique des paramètres de prétraitement
+num.stacked <- 2 # nombre de graphes par sortie graphique
+
+
+## D. paramètres des méthodes incluses dans le MIC à modifier
+ncompPCA = 4 # nombre de composantes en PCA
+nClust = 4 # nombre de clusters pour le clustering
+nLVPLSDA = 4 # nombre de variables latentes en PLS-DA
+
+```
+
+
+
+
+## Inertia
+
+```{r Inertia}
+# INERTIA
+Inertia.res = MBXUCL::Inertia(x = dataset, y = group_num, print = FALSE)
+colnames(Inertia.res[["Between_within"]]) <- c("Inertia Between groups","Inertia Within groups", "Total inertia")
+pander(Inertia.res[["Between_within"]])
+pander(Inertia.res[["Per_group"]])
+
+```
+
+## PCA
+```{r PCA}
+# PCA
+PCA.res = MBXUCL::SVDforPCA(dataset, ncomp=ncompPCA)
+```
+
+Eigenvalues:
+
+```{r eigPCA}
+eigval_mat <- rbind(PCA.res$eigval, PCA.res$var, PCA.res$cumvar)
+rownames(eigval_mat) <- c("eigen values", "percentage of variance", "cumulated percentage of variance")
+eigval_mat <- round(eigval_mat,2)
+
+pander(eigval_mat[,1:4], caption = "valeurs propres PCA pour les 4 premières CP")
+```
+
+
+```{r PCAScoresplot, out.width = '70%'}
+DrawScores(PCA.res, drawNames=TRUE, type.obj = "PCA",
+        createWindow=FALSE, main = paste0("PCA score plot for ", dataname),
+        color = group, pch = group,axes =c(1,2))
+```
+
+
+```{r PCAloadingsplot}
+DrawLoadings(PCA.res,type.obj = "PCA",
+        createWindow=FALSE, main = paste0("PCA loadings plot for ", dataname),
+        axes = c(1:2),  loadingstype="s", num.stacked = num.stacked, xlab="ppm")
+```
+
+
+## Unsupervised clustering
+
+```{r ClustMIC, }
+ClustMIC.res = MBXUCL::ClustMIC(Intensities = dataset, nClust = nClust, 
+                                Trcl = group_num, Dendr = FALSE)
+
+ClustMIC.res <- ClustMIC.res[c(1,3,5,7)] # avec clustering hiérarchique
+names(ClustMIC.res) <- c("Dunn index", "Davies-Bouldin index", "Rand index", "Adjusted Rand index")
+pander(ClustMIC.res, caption ="Clustering hiérarchique")
+```
+
+
+## PLS-DA
+
+```{r PLSDA, out.width = '70%'}
+PLSDA.res = PLSDA(x = dataset, y = group_num, nLV = nLVPLSDA, drawRMSEP = TRUE)
+```
+
+
+```{r ValidPLSDA}
+perf.plsda = PLSDA.res[4:6]
+
+perf.plsda <- matrix(unlist(perf.plsda) , ncol=4, byrow = TRUE, 
+                     dimnames = list(names(perf.plsda), names(perf.plsda[[1]])))
+
+perf.plsda <- round(perf.plsda,2)
+pander(perf.plsda, caption = "Validation PLS-DA")
+
+par(mfrow=c(1,1),xpd=TRUE)
+barplot(perf.plsda[1,], beside = TRUE, col="blue", main = "RMSEP")
+barplot(perf.plsda[2:3,], beside = TRUE, col=c("blue","red"), main = "R2 and Q2")
+legend("bottomright", legend = c("R2", "Q2"), col = c("blue","red"), 
+       pch = 15)
+
+pander("Q2 cumulé pour toutes les réponses")
+mean(perf.plsda["Q2",])
+
+```
+
+```{r PLSDAScoresplot, out.width = '70%'}
+DrawScores(PLSDA.res, drawNames=TRUE, type.obj = "PLSDA",
+        createWindow=FALSE, main = paste0("PLS-DA score plot for ", dataname),
+        color = group, pch = group,axes =c(1,2))
+```
+
+
+```{r PLSDAloadingsplot}
+DrawLoadings(PLSDA.res,  type.obj = "PLSDA",
+        createWindow=FALSE, main = paste0("PLSDA loadings plot for ", dataname),
+        axes = c(1:2),  loadingstype="s", num.stacked = num.stacked, xlab = "ppm")
+```
+
+
+
+# Evaluation de la répétabilité de différentes corrections de la Baseline
+
+```{r Repetparams_BC}
+#============ PARAMETRES A MODIFIER quand vous utilisez MBXUCL
+## A. Paramètres globaux liés aux noms et chemin d'accès des dataset
+
+dataname <- "HumanSerum" # nom du jeu de données 
+
+## Mettre ici le nom du chemin d'accès du répertoire où sont les spectres prétraités
+
+## Mettre ici le nom du chemin d'accès du répertoire où sont les FID
+data.path <-  system.file("extdata", package = "PepsNMR") # données du package PepsNMR
+dir(data.path) # ce que contient le répertoire data.path
+
+
+# ## B. Définition des groupes de spectres par sujet.
+# group_HS <- read.csv(file.path(data.path, "Group_HS.csv"), header = TRUE, sep = ";")
+# group <- as.factor(substr(group_HS[,1],4,5)) # donneur comme groupe 
+# table(group) # fréquences de chaque groupe
+# group_num <- group_HS[,2]  # Version numerique des noms de groupes
+# table(group_num) # fréquences de chaque groupe
+
+
+## C. Setup des paramètres de représentation graphique des paramètres de prétraitement
+num.stacked <- 2 # nombre de graphes par sortie graphique
+
+
+## D. paramètres des méthodes incluses dans le MIC à modifier
+ncompPCA = 4 # nombre de composantes en PCA
+nClust = 4 # nombre de clusters pour le clustering
+nLVPLSDA = 4 # nombre de variables latentes en PLS-DA
+
+```
+
+
+## Fonction de prétraitement depuis la correction de la baseline
+```{r AfterAlign_preprocess, cache=TRUE, message = FALSE, results='hide'}
+# Paramètres de la baseline qu'on veut faire varier
+all_cond_BC <- expand.grid(lambda = c(1e5, 1e6,1e7,1e8), p = c(0.1,0.05, 0.01))
+pander(all_cond_BC, caption = "Paramètres de correction de la baseline à faire varier")
+
+
+BCconditions <- paste(paste("L:", all_cond_BC$lambda), paste("p:", all_cond_BC$p), sep=" ")
+
+
+## PepsNMR prétraitement
+
+# Lecture des Fids
+fidList <- ReadFids(path = file.path(data.path, dataname), subdirs = FALSE)
+# créer la matrice spectrale
+Fid_data <- fidList[["Fid_data"]] 
+# créer la matrice d'infos sur les paramètres d'acquisition
+Fid_info <- fidList[["Fid_info"]] 
+
+
+# réarranger les noms de ligne dans Fid_data et Fid_info pour les 
+# rendre plus lisibles
+rownames(Fid_data) <- substr(rownames(Fid_data),1,5) 
+rownames(Fid_data) <- sub("-","", rownames(Fid_data)) 
+rownames(Fid_info) <- rownames(Fid_data)
+
+# GroupDelayCorrection
+Fid_data_GDC <- GroupDelayCorrection(Fid_data, Fid_info)
+# Solvent Suppression
+Fid_data_SS <- SolventSuppression(Fid_data_GDC, returnSolvent = FALSE)
+# Apodization
+Fid_data_Apod <- Apodization(Fid_data_SS, Fid_info)
+# FourierTransform
+Spectrum_data_FT <- FourierTransform(Fid_data_Apod, Fid_info)
+# ZeroOrderPhaseCorrection
+Spectrum_data_ZOPC <- ZeroOrderPhaseCorrection(Spectrum_data_FT)
+# InternalReferencing
+Spectrum_data_IR <- InternalReferencing(Spectrum_data_ZOPC, Fid_info)
+
+
+#============== After  Alignement pre-processing
+AfterAlign_preprocess <- function(lambda.bc , p.bc) {
+  
+## Baseline correction avec les paramètres lambda.bc et p.bc à faire varier
+Spectrum_data <- BaselineCorrection(Spectrum_data_IR, lambda.bc = lambda.bc, 
+                                    p.bc = p.bc)
+
+## Suppression des valeurs négatives
+Spectrum_data <- NegativeValuesZeroing(Spectrum_data)
+## Alignement - Warping
+Spectrum_data <- Warping(Spectrum_data,reference.choice = "before")
+## WindowSelection
+Spectrum_data <-  WindowSelection(Spectrum_data, from.ws = 10, to.ws = 0.2)
+# Bucketing avec le Window selection intégré
+Spectrum_data <- Bucketing(Spectrum_data, intmeth = "t", mb=500)
+## Suppression des régions non informatives
+Spectrum_data <- RegionRemoval(Spectrum_data, typeofspectra ="serum")
+## Normalisation
+Spectrum_data <- Normalization(Spectrum_data, type.norm="mean")
+
+# Exportation des résultats
+Re_Spectrum_data=Re(Spectrum_data)
+return(Re_Spectrum_data)
+}
+
+# application de la fonction AfterAlign_preprocess sur les spectres
+# prétraités jusqu'à InternalReferencing avec les différents parmaètres de 
+# la correction de la baseline
+res_Preprocessing <- mapply(FUN = AfterAlign_preprocess, lambda.bc=all_cond_BC$lambda,
+       p.bc=all_cond_BC$p, SIMPLIFY=FALSE)
+
+```
+
+
+
+## Fonction EvalRepet 
+```{r EvalRepet, out.width='50%'}
+# Création de la fonction EvalRepet qui va appliquer les différents outils 
+# MIC sur les jeux de données générés juste au dessus
+
+EvalRepet <- function(Re_Spectrum_data, group, groupN, nClust, 
+                      nLVPLSDA){
+# Re_Spectrum_data : spectre prétraité
+# group et groupN: classe et classe numérique des observations
+# nClust : nombre de clusters pour le clustering
+# nLVPLSDA: nombre de variables latentes pour le PLS-DA
+
+  
+ 
+# Inertia 
+Inertia.res = MBXUCL::Inertia(x = Re_Spectrum_data, y = groupN, print = FALSE)
+
+# PCA 
+res.pca <-  SVDforPCA(Re_Spectrum_data)
+scores12 <- DrawScores(res.pca, type.obj = "PCA",  color = group_num, 
+                       axes = c(1:2), main = "PCA scores")
+
+scores34 <-DrawScores(res.pca, type.obj = "PCA",  color = group, axes = c(3:4))   
+
+# clustering
+ClustMIC.res = MBXUCL::ClustMIC(Intensities = Re_Spectrum_data, nClust = nClust,
+                                Trcl = groupN, Dendr = FALSE)
+
+# PLS-DA
+PLSDA.res = PLSDA(x = Re_Spectrum_data, y = groupN, 
+                  nLV = nLVPLSDA, drawRMSEP = FALSE)
+
+scoresPLS12 <- DrawScores(PLSDA.res, drawNames=TRUE, type.obj = "PLSDA",
+        createWindow=FALSE, main = paste0("PLSDA score plot for ", dataname),
+        color = group, pch = group,axes =c(1,2))
+
+loadingsPLS12 <- DrawLoadings(PLSDA.res,  type.obj = "PLSDA",
+        createWindow=FALSE, main = paste0("PLSDA loadings plot for", dataname),
+        axes = c(1:2),  loadingstype="l", num.stacked = 2)
+
+
+return(list(scores12=scores12,scores34=scores34,
+            Inertia.res=Inertia.res,
+            ClustMIC.res=ClustMIC.res,
+            PLSDA.res=PLSDA.res,
+            scoresPLS12=scoresPLS12,
+            loadingsPLS12=loadingsPLS12))
+
+}
+
+# Application de la fonction EvalRepet à toutes les matrices spectrales 
+# contenues dans res_Preprocessing et prétraitées avec des paramètres 
+# de correction de la baseline différents ---------------------
+
+res.EvalRepet <- lapply(res_Preprocessing, FUN=EvalRepet, group = group,
+                        groupN = group_num, nClust=4, nLVPLSDA=4)
+
+names(res.EvalRepet) <- BCconditions
+
+
+# Arrangement des sorties de la fonction EvalRepet ---------------------
+
+# inertia 
+res.inertia <- sapply(res.EvalRepet, function(x) x[["Inertia.res"]][["Between_within"]]["Percentage",])
+colnames(res.inertia) <- BCconditions
+rownames(res.inertia) <- c("Inertia Between groups","Inertia Within groups", "Total inertia")
+res.inertia <- round(res.inertia,2)
+
+# PCA
+PCAscores12 <- lapply(res.EvalRepet, function(x) x[["scores12"]])
+names(PCAscores12) <- BCconditions
+
+# clustering
+res.clustering <- sapply(res.EvalRepet, function(x) x[["ClustMIC.res"]])
+colnames(res.clustering) <- BCconditions
+dimnam <- dimnames(res.clustering)
+res.clustering <- matrix(data = unlist(res.clustering), 
+                         ncol = length(BCconditions), dimnames = dimnam,
+                         byrow = FALSE)
+res.clustering <- res.clustering[c(1,3,5,7),]
+rownames(res.clustering) <- c("Dunn index", "Davies-Bouldin index", "Rand index", "Adjusted Rand index")
+res.clustering <- round(res.clustering,2)
+
+# PLS-DA
+Q2_PLS <- sapply(res.EvalRepet, function(x) x[["PLSDA.res"]][["Q2"]])
+Q2cum_PLS <- round(colMeans(Q2_PLS),2)
+
+PLSscores12 <- lapply(res.EvalRepet, function(x) x[["scoresPLS12"]])
+names(PLSscores12) <- BCconditions
+
+```
+
+## Paramètres de la correction de la baseline $\lambda$ et p
+
+```{r all_cond_BC}
+pander("lambda.bc (L) and p.bc (p) values for Baseline Correction")
+pander(all_cond_BC)
+```
+
+
+## Inertia
+
+```{r Inertia_ACBC}
+pander(res.inertia)
+
+par(mar=c(2,6,2,2))
+barplot(res.inertia["Inertia Between groups",],  
+     main= "Inertia Between groups", col="blue", ylim = c(60,100), las=2)
+```
+
+
+## PCA scores plots
+
+```{r PCA_ACBC, out.width='49%'}
+pander("PCA scores plots")
+PCAscores12
+```
+
+
+## Clustering
+
+```{r clustering_ACBC}
+pander("clustering")
+pander(res.clustering)
+
+par(mar=c(6,2,2,2))
+matplot(1:length(BCconditions),t(res.clustering), ylim=c(0,1),type="b",col=c("blue", "red", "forestgreen", "deepskyblue"),
+        pch=1:4, xaxt = "n", main = "Indices de clustering", xlab="")
+legend("bottomleft", inset=0.01, legend=rownames(res.clustering),
+       pch=1:4, col=c("blue", "red","forestgreen", "deepskyblue"))
+axis(side = 1, at = 1:length(BCconditions), labels = BCconditions,
+     las=2,cex.axis=0.8)
+
+```
+
+
+## PLS-DA
+
+```{r PLS_ACBC, out.width='50%'}
+pander("PLS-DA Q2cum")
+pander(Q2cum_PLS)
+par(mar=c(6,2,2,2))
+barplot(Q2cum_PLS, main = "Q2 moyen pour toutes les réponses", col="blue", las=2)
+
+pander("PLS-DA scores plots")
+PLSscores12
+```
+
+

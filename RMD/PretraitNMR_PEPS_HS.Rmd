@@ -1,0 +1,449 @@
+---
+title: "Prétraitement de données ^1^H-NMR avec PepsNMR - Human Serum dataset"
+author: "B. Govaerts & M. Martin"
+date: '`r format(Sys.time(), "%B %d, %Y,%H:%M")`'
+output:
+  html_document: # options pour sortie HTML
+    code_folding: hide #  Cache le code  
+    collapsed: yes # Crée un document unique 
+    fig_caption: yes # Figures encapsulées ? 
+    fig_height: 5 # Hauteur par défaut des figures
+    fig_width: 6 # Largeur par défaut des figure
+    highlight: tango # style de mise en valeur du code
+    number_sections: yes # Ajout table des matières 
+    theme: united  # Style du document
+    toc: yes # Table des matiere ?
+    toc_depth: 3  # Profondeur table des matière
+    toc_float: yes # table des matière flottante
+  pdf_document: # options pour sorties pdf
+    toc: yes
+    toc_depth: '3'
+  word_document: default
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r Intro, eval=FALSE, echo=FALSE}
+# ====================================================================
+# Ce fichier Rmd fournit un code +/- générique pour prétraiter des données H-NMR avec PepsNMR des FIDs bruts aux Spectres finaux.
+# ====================================================================
+```
+
+
+
+```{r setup, include=FALSE}
+## Download and load the librairies
+
+# require ("devtools")
+#devtools::install_github("ManonMartin/PepsNMR", build_vignettes = TRUE)
+#devtools::install_github("ManonMartin/MBXUCL", build_vignettes = TRUE)
+require(PepsNMR)
+require(knitr) 
+require(pander) # Librairie pour afficher des tableaux
+
+## Options globales pour le rmd
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Description des données et but
+
+> "In the HSerum dataset, a blood sample was collected for 4 different donors. For each sample, 8 sub-samples were measured across 8 days with one sub-sample of each donor per day and permutations according to a latin hypercube sampling method. The total number of available FID signals is then 4*8 = 32. Data were acquired with a 500MHz Bruker Advance spectrometer using a CPMG relaxation-editing sequence with pre-saturation. Spectra are labelled as: Jx-Dy-1D-Tx where x is the day of measurement, y is the donor label, 1D means that the spectra is a one day spectra and Tz is the order of the measure of within the day."
+
+La source de variance principale dans ces données est donc le donneur. Le prétraitement devrait donc idéalement donner une matrice de spectres qui maximise la variabilité entre les spectres des différents donneurs (variance "between") et minimise la variance entre spectres au sein d'un même donneur car ce sont uniquement des répétitions de mesures (variance "within"). 
+
+
+# Paramètrage du prétraitement et de l'affichage des étapes de prétraitements
+
+```{r PepsNMRparams, echo = FALSE}
+#============ PARAMETRES A MODIFIER quand vous utilisez PepsNMR
+
+## A. Paramètres globaux liés aux noms et chemin d'accès des dataset
+
+dataname <- "HumanSerum" # nom du jeu de données 
+
+## Mettre ici le nom du chemin d'accès du répertoire où sont les FID
+data.path <-  system.file("extdata", package = "PepsNMR") # données du package PepsNMR
+dir(data.path) # ce que contient le répertoire data.path
+
+## B. Définition des groupes de spectres par sujet. 
+group_HS <- read.csv(file.path(data.path, "Group_HS.csv"), header = TRUE, sep = ";")
+group <- as.factor(substr(group_HS[,1],4,5)) # donneur comme groupe 
+table(group) # fréquences de chaque groupe
+group_num <- group_HS[,2]  # Version numerique des noms de groupes
+table(group_num) # fréquences de chaque groupe
+
+## C. Options de sauvegarde
+# Path du repertoire où il faut sauver les spectres finaux
+out.path <- "/Users/manon/Documents/Conférences/RFMF2018/Atelier_PepsNMR/RMD"  
+
+# sauver en Rdata les spectres finaux et les paramètres d'acquisition ?
+save_RData <- TRUE 
+ # exporter en csv ?
+export_csv <-  TRUE
+
+## D. Setup des paramètres de représentation graphique des paramètres de prétraitement
+DrawFid <- TRUE
+DrawSpectra <- TRUE
+NumStack <- 4 # nombre de graphes par sortie graphique
+WhichSpectra <- c(1:4) # LEs spectres dans la matrice spectrale qui sont représentés
+Fid_window <- 1:16000 # Quelle fenêtre Fid ?
+Raw_Spec_window <- 1:30000  # Quelle fenêtre Spectrale ?
+
+
+## E. Définition de paramètres des fonctions de prétraitement qu'il faut absolument vérifier
+
+# 3.1 Lecture des Fid
+# T si les FID files sont organisés en plus de 1 niveau de sous répertories
+subdirs = FALSE 
+
+# 5.5 Warping
+# appliquer le Warping ?
+do_Warping = TRUE 
+reference.choice = "before"
+
+# 5.7 Bucketing
+# nombre de buckets
+mb = 500  
+
+# 5.8 Region Removal
+# type de spectre ptrétraité pour déterminer les zones à supprimer
+typeofspectra ="serum" 
+
+# 5.9 ZoneAggregation
+# appliquer la Zone Aggregation ?
+do_ZoneAggreg = FALSE
+# zone à aggréger
+fromto.za =list(Citrate = c(2.5, 2.7))
+
+# 5.10 Normalisation
+type.norm = "mean" # type de normalisation
+
+```
+
+
+# Lecture des FID
+
+```{r PreprocessingWorkflow1}
+# Lecture des Fid
+fidList <- ReadFids(path = file.path(data.path, dataname), subdirs = FALSE)
+
+# créer la matrice spectrale
+Fid_data <- fidList[["Fid_data"]] 
+
+# créer la matrice d'infos sur les paramètres d'acquisition
+Fid_info <- fidList[["Fid_info"]] 
+
+# réarranger les noms de ligne dans Fid_data et Fid_info pour les 
+# rendre plus lisibles
+rownames(Fid_data) <- substr(rownames(Fid_data),1,5) 
+rownames(Fid_data) <- sub("-","", rownames(Fid_data)) 
+rownames(Fid_info) <- rownames(Fid_data)
+
+
+# Représentation graphique des FID
+if(DrawFid == T) Draw(Fid_data[WhichSpectra,Fid_window], type.draw = "signal", 
+                      num.stacked = NumStack, main="FIDs bruts", xlab = "time")
+
+# Représentation graphique des FID agrandis (1/20eme de la fenêtre spectrale)
+if(DrawFid==T) Draw(Fid_data[WhichSpectra, round(Fid_window/20)], 
+                    type.draw = "signal", num.stacked = NumStack, 
+                    main = "FIDs bruts (zoom)", xlab = "time")
+
+```
+
+
+# Prétraitement du FID
+
+## Correction du Group Delay
+```{r PreprocessingWorkflow2}
+
+# GroupDelayCorrection
+Fid_data_GDC <- GroupDelayCorrection(Fid_data, Fid_info)
+
+
+# Représentation graphique des FID
+if(DrawFid==T) Draw(Fid_data_GDC[WhichSpectra, Fid_window], type.draw = "signal", 
+                    num.stacked = NumStack, main = "Group Delay Correction")
+
+# Représentation graphique des FID agrandis (1/20eme de la fenêtre spectrale)
+if(DrawFid==T) Draw(Fid_data_GDC[WhichSpectra, round(Fid_window/20)], 
+                    type.draw = "signal",num.stacked = NumStack,  
+                    main = "Group Delay Correction (zoom)", xlab = "time")
+```
+
+## Solvent Suppression
+
+```{r PreprocessingWorkflow3}
+# Solvent Suppression
+res_solventSuppres <- SolventSuppression(Fid_data_GDC, returnSolvent = TRUE)
+
+# Extraire la matrice spectrale
+Fid_data_SS <- res_solventSuppres$Fid_data 
+
+# Extraire la partie réelle du signal du solvent estimé
+SolventRe <- Re(res_solventSuppres$SolventRe) 
+
+# Représentation graphique des FID
+if(DrawFid==T){
+  Draw(Fid_data_SS[WhichSpectra,Fid_window], type.draw = "signal",
+       num.stacked = NumStack, main = "Solvent suppression", xlab = "time") 
+
+  par(mfrow=c(4,1), mar=c(2,2,2,2))
+   for (i in WhichSpectra)  {
+     plot(Re(Fid_data_GDC[i,Fid_window]), type = "l", col = "red", 
+          main = "FID before solvent suppression (real part)", xlab = "index")
+     lines(SolventRe[i,Fid_window], type = "l",col = "blue")
+     legend("topright", legend = c("Solvent signal (real part)"), 
+            col="blue", lty=1)
+   }
+  
+}
+```
+
+
+## Apodization
+
+```{r PreprocessingWorkflow4}
+# Apodization
+Fid_data_Apod <- Apodization(Fid_data_SS, Fid_info)
+
+# Représentation graphique des FID
+if(DrawFid==T) Draw(Fid_data_Apod[WhichSpectra, Fid_window], type.draw = "signal",
+                    num.stacked = NumStack, main = "Apodization", xlab = "time")
+```
+
+
+## Transformée de Fourier
+```{r PreprocessingWorkflow5}
+# FourierTransform
+Spectrum_data_FT <- FourierTransform(Fid_data_Apod, Fid_info)
+
+# Représentation graphique des FID
+if(DrawSpectra==T) Draw(Spectrum_data_FT[WhichSpectra,Raw_Spec_window], 
+                        type.draw = "signal", num.stacked = NumStack,
+                        main="Fourier Transform", xlab = "ppm")
+```
+
+
+# Prétraitements des spectres après la Transformée de Fourier
+
+## Correction de phase d'ordre 0
+```{r PreprocessingWorkflow6}
+# ZeroOrderPhaseCorrection
+Spectrum_data_ZOPC <- ZeroOrderPhaseCorrection(Spectrum_data_FT)
+
+# Représentation graphique des spectres
+if(DrawSpectra==T)  Draw(Spectrum_data_ZOPC[WhichSpectra,Raw_Spec_window], 
+                         type.draw = "signal",  num.stacked = NumStack, 
+                         main = "ZeroOrderPhaseCorrection", xlab = "ppm")
+```
+
+
+## Alignement par rapport au pic de référence (le TMSP) 
+```{r PreprocessingWorkflow7}
+# InternalReferencing
+res_IR <- InternalReferencing(Spectrum_data_ZOPC, Fid_info, 
+                              rowindex_graph = WhichSpectra)
+
+# Extraire la matrice spectrale
+Spectrum_data_IR <- res_IR$Spectrum_data 
+
+
+
+# Représentation graphique des spectres
+if(DrawSpectra == T)  {
+  Draw(Spectrum_data_IR[WhichSpectra,Raw_Spec_window], 
+       type.draw = "signal", num.stacked = NumStack, 
+       main = "Internal Referencing", xlab = "ppm")
+
+  res_IR$plots[[1]] # graphe donné en sortie de la fonction InternalReferencing
+}
+```
+
+
+## Baseline correction
+```{r PreprocessingWorkflow8}
+res_BC <- BaselineCorrection(Spectrum_data_IR, lambda.bc = 1e+08, 
+                             p.bc = 0.01, returnBaseline = TRUE)
+
+# Extraire la matrice spectrale
+Spectrum_data_BC <- res_BC$Spectrum_data
+
+# Extraire les Baselines estimées
+Baseline <- t(res_BC$Baseline)
+
+# Représentation graphique des spectres
+if(DrawSpectra==T)  {
+  Draw(Spectrum_data_BC[WhichSpectra, Raw_Spec_window], 
+                          type.draw = "signal", num.stacked = NumStack, 
+                          main="Baseline correction", xlab = "ppm")
+
+  par(mfrow=c(4,1), mar=c(2,2,2,2))
+   for (i in 1:length(WhichSpectra))  {
+     plot(Re(Spectrum_data_IR[i,Raw_Spec_window]), type = "l", col = "red", 
+          main = "Spectrum before Baseline correction (real part)", 
+          xlab = "index")
+     lines(Baseline[i,], type = "l", col = "blue")
+     legend("topright", legend = c("Baseline signal (real part)"), 
+            col="blue", lty=1)
+   }
+}
+```
+
+
+## Suppression des valeurs négatives
+```{r PreprocessingWorkflow9}
+# NegativeValuesZeroing
+Spectrum_data_NVZ <- NegativeValuesZeroing(Spectrum_data_BC)
+
+# Représentation graphique des spectres
+if(DrawSpectra==T)  Draw(Spectrum_data_NVZ[WhichSpectra, Raw_Spec_window], 
+                         type.draw = "signal", num.stacked = NumStack, 
+                         main = "Negative Values Zeroing", xlab = "ppm")
+```
+
+
+## Alignement - Warping
+```{r PreprocessingWorkflow10}
+if (do_Warping){
+  # Warping
+  Spectrum_data_beforeWW <- Warping(Spectrum_data_NVZ, 
+                                  reference.choice = reference.choice)
+
+  # Représentation graphique des spectres
+  if(DrawSpectra==T)  Draw(Spectrum_data_beforeWW[WhichSpectra, Raw_Spec_window], 
+                         type.draw = "signal",  num.stacked = NumStack,
+                         main = "Warping", xlab = "ppm")
+
+} else {Spectrum_data_beforeWW <- Spectrum_data_NVZ}
+
+```
+
+
+## Window selection 
+```{r PreprocessingWorkflow11}
+# Window selection
+ Spectrum_data_WS <- WindowSelection(Spectrum_data_beforeWW, 
+                                     from.ws = 10, to.ws = 0.2)
+```
+
+## Bucketing
+```{r PreprocessingWorkflow12}
+# Bucketing avec le Window selection intégré
+Spectrum_data_B <- Bucketing(Spectrum_data_WS, intmeth = "t", mb = mb)
+
+# Représentation graphique des spectres
+if(DrawSpectra==T) Draw(Spectrum_data_B[WhichSpectra,], 
+                        type.draw = "signal", num.stacked = NumStack,
+                        main = "Bucketing", xlab = "ppm")
+```
+
+
+## Suppression des régions non informatives
+```{r PreprocessingWorkflow13}
+# RegionRemoval
+Spectrum_data_RR <-  RegionRemoval(Spectrum_data_B, typeofspectra = typeofspectra)
+
+# Représentation graphique des spectres
+if(DrawSpectra==T) Draw(Spectrum_data_RR[WhichSpectra,], type.draw = "signal", 
+                        num.stacked = NumStack, main= "Region Removal", xlab = "ppm")
+```
+
+## Agregation de zones 
+```{r PreprocessingWorkflow14}
+# ZoneAggregation
+if(do_ZoneAggreg == TRUE) {
+Spectrum_data_beforeNorm <- ZoneAggregation(Spectrum_data_RR, 
+                                 fromto.za = fromto.za)
+
+# Représentation graphique des spectres
+if(DrawSpectra==T) Draw(Spectrum_data[WhichSpectra,], type.draw = "signal",
+                        num.stacked = NumStack, main = "Zone Aggregation", xlab = "ppm")
+
+} else {Spectrum_data_beforeNorm <- Spectrum_data_RR}
+```
+
+## Normalisation
+```{r PreprocessingWorkflow15}
+# Normalization
+Spectrum_data_N <- Normalization(Spectrum_data_beforeNorm, type.norm = type.norm)
+
+# Représentation graphique des spectres
+if(DrawSpectra==T) Draw(Spectrum_data_N[WhichSpectra,], type.draw = "signal",
+                        num.stacked = NumStack, main = "Normalization", xlab = "ppm")
+
+```
+
+
+# Exportation des résultats
+```{r resultsExport}
+## Sauvegarde des spectres traités en fichiers .Rdata (format R) et .csv
+
+# extraire la partie réelle de la matrice spectrale
+Re_Spectrum_data <- Re(Spectrum_data_N) 
+
+if (save_RData == TRUE) {
+  save(Re_Spectrum_data, group_HS, Fid_info, 
+       file=file.path(out.path, paste0(dataname,".RData")))
+}
+
+if (export_csv == TRUE) {
+  # separateur de champs: ";" et séparateur décimal: "."
+  utils::write.table(Re_Spectrum_data, 
+                     file = file.path(out.path,paste0(dataname,"_Spectra.csv")),
+                     sep=";", dec=".", row.names = TRUE, col.names = NA)
+  utils::write.table(Fid_info, 
+                     file = file.path(out.path, paste0(dataname,"_FidInfo.csv")),
+                     sep=" ;", dec=".")
+}
+
+```
+
+
+# Utilisation de la fonction PreprocessingChain
+```{r PreprocessingChain, eval=FALSE}
+?PreprocessingChain
+res_PreprocessingChain <- PreprocessingChain(Fid_data = NULL, Fid_info = NULL,
+                                             data.path = file.path(data.path,
+                                                                   dataname),
+                       readFids = TRUE, groupDelayCorr = TRUE,
+                       solventSuppression = TRUE, apodization = TRUE,
+                      fourierTransform = TRUE, zeroOrderPhaseCorr = TRUE,
+                      internalReferencing = TRUE, baselineCorrection = TRUE,
+                      negativeValues0 = TRUE, warping = TRUE,
+                      windowSelection = TRUE, bucketing = TRUE,
+                      regionRemoval = TRUE, zoneAggregation = FALSE,
+                      normalization = TRUE,
+                      export = FALSE, type.norm = "mean",
+                      reference.choice = "before",
+                      typeofspectra = "serum")
+
+```
+
+# Visualisation des spectres finaux
+```{r VisualisationSpectr, out.width='50%', fig.show='hold'}
+## Visualisation des spectres finaux
+Draw(Re_Spectrum_data, type.draw = "signal", num.stacked = 4, 
+     main = "Spectres prétraités", xlab = "ppm")
+```
+
+
+# PCA sur les spectres finaux
+
+```{r, out.width='50%', fig.show='hold'}
+# PCA scores
+Draw(Re_Spectrum_data, type.draw = "pca", type = "scores", Class = group, 
+     axes = c(1:2), main = "PCA scores plot 1-2")
+Draw(Re_Spectrum_data, type.draw = "pca", type = "scores", Class = group, 
+     axes = c(3:4), main = "PCA scores plot 3-4")
+```
+
+
+```{r VisualisationSpectr2,  out.width='80%'}
+# PCA loadings
+Draw(Re_Spectrum_data, type.draw = "pca", type = "loadings", axes = c(1:2), 
+     main = "PCA loadings plot 1-2", xlab = "ppm")
+```
+
+
+
